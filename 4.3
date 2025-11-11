@@ -1,0 +1,250 @@
+// ============================================================================
+// FILE: package.json (copy into package.json if you want separate files)
+// ============================================================================
+/*
+{
+  "name": "concurrent-ticket-booking",
+  "version": "1.0.0",
+  "main": "booking-system.js",
+  "scripts": {
+    "start": "node booking-system.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.18.2",
+    "mongoose": "^7.0.0"
+  }
+}
+*/
+
+// ============================================================================
+// FILE: booking-system.js (single-file app - run with `node booking-system.js`)
+// ============================================================================
+
+const express = require("express");
+const bodyParser = require("body-parser");
+const mongoose = require("mongoose");
+const { Schema, Types } = mongoose;
+
+// ---------------------------
+// CONFIG
+// ---------------------------
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/booking_demo";
+const PORT = process.env.PORT || 3000;
+const DEFAULT_LOCK_SECONDS = 120; // default lock TTL (seconds)
+
+// ---------------------------
+// DB CONNECTION
+// ---------------------------
+async function connectDB() {
+  await mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+  console.log("✅ Connected to MongoDB:", MONGO_URI);
+}
+
+// ---------------------------
+// MODELS
+// ---------------------------
+
+// ====== FILE: models/show.model.js ======
+const ShowSchema = new Schema({
+  title: { type: String, required: true },
+  venue: String,
+  date: Date,
+  // optional metadata
+  meta: { createdAt: { type: Date, default: Date.now } }
+});
+const Show = mongoose.model("Show", ShowSchema);
+
+// ====== FILE: models/seat.model.js ======
+// Each seat is a separate document to simplify locking & transactions.
+// seatNumber could be "A1", "B2", etc.
+const SeatSchema = new Schema({
+  showId: { type: Schema.Types.ObjectId, required: true, index: true },
+  seatNumber: { type: String, required: true }, // e.g., "A1"
+  category: { type: String }, // e.g., "VIP", "Regular"
+  price: { type: Number, required: true, min: 0 },
+  status: { type: String, enum: ["available", "booked"], default: "available", index: true },
+  // bookingRef stored once booked for easy lookup
+  bookingRef: { type: Schema.Types.ObjectId, ref: "Booking", default: null }
+}, { timestamps: true });
+
+// Unique seat per show
+SeatSchema.index({ showId: 1, seatNumber: 1 }, { unique: true });
+
+const Seat = mongoose.model("Seat", SeatSchema);
+
+// ====== FILE: models/locks.model.js ======
+// Locks are ephemeral documents. TTL index on 'expiresAt' will remove expired locks automatically.
+// We set _id to `${showId}_${seatId}` to ensure only one lock per seat.
+const LockSchema = new Schema({
+  _id: { type: String, required: true }, // e.g., `${showId}_${seatId}`
+  showId: { type: Schema.Types.ObjectId, required: true, index: true },
+  seatId: { type: Schema.Types.ObjectId, required: true, index: true },
+  userId: { type: String, required: true }, // could be ObjectId in real apps
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, required: true, index: true } // TTL index will be created on this field
+});
+// Note: TTL index on expiresAt must be created separately with expireAfterSeconds: 0
+const Lock = mongoose.model("Lock", LockSchema);
+
+// ====== FILE: models/booking.model.js ======
+const BookingSchema = new Schema({
+  showId: { type: Schema.Types.ObjectId, required: true, index: true },
+  seatId: { type: Schema.Types.ObjectId, required: true, index: true },
+  userId: { type: String, required: true },
+  pricePaid: { type: Number, required: true },
+  status: { type: String, enum: ["confirmed", "cancelled"], default: "confirmed" },
+  createdAt: { type: Date, default: Date.now }
+});
+BookingSchema.index({ userId: 1, createdAt: -1 });
+const Booking = mongoose.model("Booking", BookingSchema);
+
+// ---------------------------
+// INITIALIZATION: create TTL index for locks
+// ---------------------------
+async function ensureIndexes() {
+  // TTL: expire documents when expiresAt <= now. expireAfterSeconds: 0 means remove at expiresAt.
+  await Lock.collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  console.log("✅ Created TTL index on locks.expiresAt");
+  // Ensure other indexes exist (models already define indexes, but force creation)
+  await Seat.createIndexes();
+  await Show.createIndexes();
+  await Booking.createIndexes();
+  console.log("✅ Ensured other indexes");
+}
+
+// ---------------------------
+// HELPERS
+// ---------------------------
+function lockIdFor(showId, seatId) {
+  return `${String(showId)}_${String(seatId)}`;
+}
+function nowPlusSeconds(sec) {
+  return new Date(Date.now() + sec * 1000);
+}
+
+// ---------------------------
+// CONTROLLERS / ROUTES
+// ---------------------------
+const app = express();
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Health
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+// ====== FILE: routes/seed.js ======
+/*
+  Seed endpoint: creates a sample show + seats so you can test quickly.
+  Example: GET /__seed
+*/
+app.get("/__seed", async (req, res) => {
+  try {
+    // Create show
+    const show = new Show({ title: "The Big Concert", venue: "City Hall", date: new Date(Date.now() + 7 * 24 * 3600 * 1000) });
+    await show.save();
+
+    // Create seat grid: rows A-C, cols 1-10
+    const seats = [];
+    const categories = { A: "VIP", B: "Premium", C: "Regular" };
+    for (const row of ["A", "B", "C"]) {
+      for (let col = 1; col <= 10; col++) {
+        seats.push({
+          showId: show._id,
+          seatNumber: `${row}${col}`,
+          category: categories[row],
+          price: row === "A" ? 1000 : (row === "B" ? 700 : 400)
+        });
+      }
+    }
+    await Seat.insertMany(seats);
+    res.json({ seededShowId: show._id, seatsCreated: seats.length });
+  } catch (err) {
+    console.error("Seed error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====== FILE: routes/showSeats.js ======
+/*
+  GET /shows/:showId/seats
+  Returns seat map with availability and current locks (if any).
+  Optional query param `userId` will show which seats are locked by the querying user.
+*/
+app.get("/shows/:showId/seats", async (req, res) => {
+  try {
+    const { showId } = req.params;
+    const userId = req.query.userId || null;
+
+    // fetch seats
+    const seats = await Seat.find({ showId }).lean();
+
+    // fetch locks for these seats (locks are ephemeral)
+    const seatIds = seats.map(s => s._id);
+    const locks = await Lock.find({ showId, seatId: { $in: seatIds } }).lean();
+
+    const lockMap = {};
+    for (const l of locks) lockMap[String(l.seatId)] = l;
+
+    // combine
+    const map = seats.map(s => ({
+      seatId: s._id,
+      seatNumber: s.seatNumber,
+      category: s.category,
+      price: s.price,
+      status: s.status,
+      locked: !!lockMap[String(s._id)],
+      lockedByMe: userId ? (lockMap[String(s._id)] && lockMap[String(s._id)].userId === userId) : false,
+      lockExpiresAt: lockMap[String(s._id)] ? lockMap[String(s._id)].expiresAt : null
+    }));
+
+    res.json({ showId, seats: map });
+  } catch (err) {
+    console.error("Error get seats:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====== FILE: routes/lockSeat.js ======
+/*
+  POST /shows/:showId/seats/:seatId/lock
+  Body: { userId: "user123", lockSeconds: 120 }
+  Behavior:
+    - Fails if seat already booked.
+    - Attempts to insert a lock doc with _id `${showId}_${seatId}`.
+    - If lock already exists, return info (who holds it and expiry).
+    - If caller already holds it, extend expiry if requested.
+*/
+app.post("/shows/:showId/seats/:seatId/lock", async (req, res) => {
+  const { showId, seatId } = req.params;
+  const userId = req.body.userId || req.query.userId;
+  const lockSeconds = parseInt(req.body.lockSeconds || req.query.lockSeconds || DEFAULT_LOCK_SECONDS, 10);
+
+  if (!userId) return res.status(400).json({ error: "userId required" });
+
+  try {
+    // Ensure seat exists and not already booked
+    const seat = await Seat.findOne({ _id: seatId, showId });
+    if (!seat) return res.status(404).json({ error: "Seat not found" });
+    if (seat.status === "booked") return res.status(409).json({ error: "Seat already booked" });
+
+    const lid = lockIdFor(showId, seatId);
+    const expiresAt = nowPlusSeconds(lockSeconds);
+
+    // Try inserting a lock. Use insertOne to fail on duplicate.
+    try {
+      const lockDoc = { _id: lid, showId: Types.ObjectId(showId), seatId: Types.ObjectId(seatId), userId, expiresAt, createdAt: new Date() };
+      await Lock.collection.insertOne(lockDoc);
+      // successfully locked
+      return res.json({ locked: true, lockExpiresAt: expiresAt });
+    } catch (insertErr) {
+      // duplicate key or other error -> lock exists or insertion failed
+      if (insertErr.code === 11000) {
+        // fetch existing lock
+        const existing = await Lock.findById(lid).lean();
+        if (!existing) {
+          // weird race, try again or fail
+          return res.status(500).json({ error: "Lock exists but cannot be retrieved; retry" });
+        }
+        // If the existing lock belongs to same user, optionally extend it:
+        if (existing.userId === userId) {
