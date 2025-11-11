@@ -1,0 +1,262 @@
+// ============================================================================
+// FILE: package.json
+// ============================================================================
+/*
+{
+  "name": "playing-card-api",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.0.0",
+    "body-parser": "^1.20.2"
+  }
+}
+*/
+
+
+// ============================================================================
+// FILE: server.js  (single-file version; run with `node server.js`)
+// ============================================================================
+const express = require("express");
+const bodyParser = require("body-parser");
+const mongoose = require("mongoose");
+const { Schema } = mongoose;
+
+// -----------------------------
+// DATABASE CONNECTION
+// -----------------------------
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/playing_cards";
+const PORT = process.env.PORT || 3000;
+
+async function connectDB() {
+  await mongoose.connect(MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+  });
+  console.log("✅ Connected to MongoDB");
+}
+
+// ============================================================================
+// FILE: models/card.model.js
+// ============================================================================
+const CardSchema = new Schema({
+  name: { type: String, required: true }, // "Ace of Spades"
+  suit: { type: String, required: true, enum: ["Hearts", "Diamonds", "Clubs", "Spades"] },
+  rank: {
+    type: String,
+    required: true,
+    enum: ["Ace", "2", "3", "4", "5", "6", "7", "8", "9", "10", "Jack", "Queen", "King"]
+  },
+  description: String,
+  rarity: { type: String, enum: ["Common", "Uncommon", "Rare", "Legendary"], default: "Common" },
+  createdAt: { type: Date, default: Date.now }
+});
+
+CardSchema.index({ name: "text", suit: "text", rank: "text", description: "text" });
+
+const Card = mongoose.model("Card", CardSchema);
+
+// ============================================================================
+// FILE: models/deck.model.js
+// ============================================================================
+const DeckSchema = new Schema({
+  name: { type: String, required: true, unique: true },
+  owner: { type: String, required: true },
+  cards: [{ type: Schema.Types.ObjectId, ref: "Card" }],
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Deck = mongoose.model("Deck", DeckSchema);
+
+// ============================================================================
+// FILE: controllers/card.controller.js
+// ============================================================================
+const cardController = {
+  async create(req, res) {
+    try {
+      const card = await Card.create(req.body);
+      res.status(201).json(card);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async list(req, res) {
+    try {
+      const { suit, rank, q } = req.query;
+      const filter = {};
+      if (suit) filter.suit = suit;
+      if (rank) filter.rank = rank;
+      if (q) filter.$text = { $search: q };
+      const cards = await Card.find(filter).sort({ createdAt: -1 });
+      res.json(cards);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+
+  async get(req, res) {
+    try {
+      const card = await Card.findById(req.params.id);
+      if (!card) return res.status(404).json({ error: "Card not found" });
+      res.json(card);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async update(req, res) {
+    try {
+      const card = await Card.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      if (!card) return res.status(404).json({ error: "Card not found" });
+      res.json(card);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async remove(req, res) {
+    try {
+      const deleted = await Card.findByIdAndDelete(req.params.id);
+      if (!deleted) return res.status(404).json({ error: "Card not found" });
+      res.json({ message: "Card deleted" });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+};
+
+// ============================================================================
+// FILE: controllers/deck.controller.js
+// ============================================================================
+const deckController = {
+  async createDeck(req, res) {
+    try {
+      const deck = await Deck.create(req.body);
+      res.status(201).json(deck);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async listDecks(req, res) {
+    try {
+      const decks = await Deck.find().populate("cards");
+      res.json(decks);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+
+  async getDeck(req, res) {
+    try {
+      const deck = await Deck.findById(req.params.id).populate("cards");
+      if (!deck) return res.status(404).json({ error: "Deck not found" });
+      res.json(deck);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async addCard(req, res) {
+    try {
+      const { deckId, cardId } = req.params;
+      const deck = await Deck.findById(deckId);
+      if (!deck) return res.status(404).json({ error: "Deck not found" });
+      if (deck.cards.includes(cardId))
+        return res.status(400).json({ error: "Card already in deck" });
+      deck.cards.push(cardId);
+      await deck.save();
+      res.json(deck);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async removeCard(req, res) {
+    try {
+      const { deckId, cardId } = req.params;
+      const deck = await Deck.findById(deckId);
+      if (!deck) return res.status(404).json({ error: "Deck not found" });
+      deck.cards = deck.cards.filter(id => id.toString() !== cardId);
+      await deck.save();
+      res.json(deck);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+
+  async deleteDeck(req, res) {
+    try {
+      const deleted = await Deck.findByIdAndDelete(req.params.id);
+      if (!deleted) return res.status(404).json({ error: "Deck not found" });
+      res.json({ message: "Deck deleted" });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+};
+
+// ============================================================================
+// FILE: routes/card.routes.js
+// ============================================================================
+const cardRouter = express.Router();
+
+cardRouter.post("/", cardController.create);
+cardRouter.get("/", cardController.list);
+cardRouter.get("/:id", cardController.get);
+cardRouter.put("/:id", cardController.update);
+cardRouter.delete("/:id", cardController.remove);
+
+module.exports = cardRouter;
+
+// ============================================================================
+// FILE: routes/deck.routes.js
+// ============================================================================
+const deckRouter = express.Router();
+
+deckRouter.post("/", deckController.createDeck);
+deckRouter.get("/", deckController.listDecks);
+deckRouter.get("/:id", deckController.getDeck);
+deckRouter.post("/:deckId/cards/:cardId", deckController.addCard);
+deckRouter.delete("/:deckId/cards/:cardId", deckController.removeCard);
+deckRouter.delete("/:id", deckController.deleteDeck);
+
+module.exports = deckRouter;
+
+// ============================================================================
+// FILE: app + startup
+// ============================================================================
+const app = express();
+app.use(bodyParser.json());
+
+app.get("/", (req, res) =>
+  res.json({ message: "🎴 Playing Card Collection API is running" })
+);
+
+// Mount routes
+app.use("/api/cards", cardRouter);
+app.use("/api/decks", deckRouter);
+
+// Connect DB & start server
+(async () => {
+  await connectDB();
+  app.listen(PORT, () =>
+    console.log(`🚀 Server running on http://localhost:${PORT}`)
+  );
+})();
+
+// ============================================================================
+// FILE: README.md (Quick Usage)
+// ============================================================================
+/*
+# 🎴 Playing Card REST API
+
+## Start
+```bash
+npm install
+npm start
