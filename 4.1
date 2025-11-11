@@ -1,0 +1,187 @@
+// ============================================================================
+// FILE: employee-cli.js
+// Run using: node employee-cli.js
+// ============================================================================
+const readline = require("readline");
+
+// ===============================
+// Data Storage (Array-based)
+// ===============================
+let employees = [
+  { id: 1, name: "Alice Johnson", department: "HR", salary: 45000 },
+  { id: 2, name: "Bob Smith", department: "Engineering", salary: 60000 },
+  { id: 3, name: "Charlie Brown", department: "Finance", salary: 50000 }
+];
+let nextId = employees.length + 1;
+
+// ===============================
+// Helper Functions
+// ===============================
+
+// Pretty print all employees
+function listEmployees() {
+  console.log("\n=== Employee List ===");
+  if (employees.length === 0) {
+    console.log("No employees found.");
+    return;
+  }
+  console.table(employees);
+}
+
+// Add new employee
+function addEmployee(rl) {
+  console.log("\n=== Add Employee ===");
+  rl.question("Enter name: ", (name) => {
+    if (!name.trim()) return invalidInput(rl, addEmployee);
+
+    rl.question("Enter department: ", (department) => {
+      if (!department.trim()) return invalidInput(rl, addEmployee);
+
+      rl.question("Enter salary: ", (salaryStr) => {
+        const salary = parseFloat(salaryStr);
+        if (isNaN(salary) || salary <= 0) return invalidInput(rl, addEmployee);
+
+        employees.push({ id: nextId++, name, department, salary });
+        console.log("✅ Employee added successfully!");
+        showMenu(rl);
+      });
+    });
+  });
+}
+
+// Search employee
+function searchEmployee(rl) {
+  rl.question("\nEnter employee ID or name to search: ", (query) => {
+    query = query.trim();
+    if (!query) return invalidInput(rl, searchEmployee);
+
+    const results = employees.filter(
+      (emp) =>
+        emp.id === Number(query) ||
+        emp.name.toLowerCase().includes(query.toLowerCase())
+    );
+
+    if (results.length > 0) {
+      console.table(results);
+    } else {
+      console.log("❌ No employee found.");
+    }
+    showMenu(rl);
+  });
+}
+
+// Update employee
+function updateEmployee(rl) {
+  rl.question("\nEnter Employee ID to update: ", (idStr) => {
+    const id = Number(idStr);
+    const emp = employees.find((e) => e.id === id);
+    if (!emp) {
+      console.log("❌ Employee not found.");
+      return showMenu(rl);
+    }
+
+    console.log("Leave field empty to keep current value.");
+    rl.question(`Enter new name (${emp.name}): `, (name) => {
+      rl.question(`Enter new department (${emp.department}): `, (dept) => {
+        rl.question(`Enter new salary (${emp.salary}): `, (salStr) => {
+          const salary = salStr.trim() ? parseFloat(salStr) : emp.salary;
+          emp.name = name.trim() || emp.name;
+          emp.department = dept.trim() || emp.department;
+          emp.salary = isNaN(salary) ? emp.salary : salary;
+          console.log("✅ Employee updated successfully!");
+          showMenu(rl);
+        });
+      });
+    });
+  });
+}
+
+// Delete employee
+function deleteEmployee(rl) {
+  rl.question("\nEnter Employee ID to delete: ", (idStr) => {
+    const id = Number(idStr);
+    const index = employees.findIndex((e) => e.id === id);
+    if (index === -1) {
+      console.log("❌ Employee not found.");
+    } else {
+      employees.splice(index, 1);
+      console.log("🗑️ Employee deleted successfully!");
+    }
+    showMenu(rl);
+  });
+}
+
+// Exit app
+function exitApp(rl) {
+  console.log("\n👋 Exiting Employee Management System. Goodbye!");
+  rl.close();
+  process.exit(0);
+}
+
+// Invalid input handler
+function invalidInput(rl, callback) {
+  console.log("⚠️ Invalid input. Try again.");
+  callback(rl);
+}
+
+// ===============================
+// Menu System
+// ===============================
+function showMenu(rl) {
+  console.log(`
+===============================
+  EMPLOYEE MANAGEMENT SYSTEM
+===============================
+1. View all employees
+2. Add new employee
+3. Search employee
+4. Update employee
+5. Delete employee
+6. Exit
+-------------------------------
+`);
+
+  rl.question("Enter your choice (1-6): ", (choice) => {
+    switch (choice.trim()) {
+      case "1":
+        listEmployees();
+        showMenu(rl);
+        break;
+      case "2":
+        addEmployee(rl);
+        break;
+      case "3":
+        searchEmployee(rl);
+        break;
+      case "4":
+        updateEmployee(rl);
+        break;
+      case "5":
+        deleteEmployee(rl);
+        break;
+      case "6":
+        exitApp(rl);
+        break;
+      default:
+        console.log("⚠️ Invalid choice. Please enter 1–6.");
+        showMenu(rl);
+    }
+  });
+}
+
+// ===============================
+// App Entry Point
+// ===============================
+function main() {
+  console.clear();
+  console.log("🚀 Welcome to CLI Employee Management System\n");
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  showMenu(rl);
+}
+
+main();
